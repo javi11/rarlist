@@ -57,9 +57,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("create %s: %v", outPath, err)
 		}
-		// Ensure closure per file
+		// Ensure closure per file (log on close error)
 		func() {
-			defer outF.Close()
+			defer func() {
+				if cerr := outF.Close(); cerr != nil {
+					log.Printf("close %s: %v", outPath, cerr)
+				}
+			}()
 			var written int64
 			for idx, part := range af.Parts {
 				f, err := os.Open(part.Path)
@@ -68,7 +72,7 @@ func main() {
 				}
 				// Close volume file after this part
 				func() {
-					defer f.Close()
+					defer func() { _ = f.Close() }()
 					// Seek to the data offset inside this volume
 					if _, err := f.Seek(part.DataOffset, io.SeekStart); err != nil {
 						log.Fatalf("seek %s: %v", part.Path, err)
