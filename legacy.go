@@ -82,8 +82,8 @@ func scanLegacy(br *bufio.Reader, vi *VolumeIndex, baseOffset int64) error {
 		fb := FileBlock{Name: name, HeaderPos: fileHeaderPos, HeaderSize: int64(size), DataPos: fileHeaderPos + int64(size), PackedSize: int64(packSize), UnpackedSize: int64(unpSize), Stored: stored}
 		vi.FileBlocks = append(vi.FileBlocks, fb)
 		vi.TotalHeaderBytes = fb.DataPos
+
 		return nil
-		searchStart = typePos + 1
 	}
 	return fmt.Errorf("legacy scan: no file header found")
 }
