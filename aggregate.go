@@ -99,7 +99,7 @@ func ListFilesFS(fs FileSystem, first string) ([]AggregatedFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	idx, err := IndexVolumes(fs, vols)
+	idx, err := IndexVolumesParallel(fs, vols, 0)
 	if err != nil {
 		return nil, err
 	}

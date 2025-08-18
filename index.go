@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
 // IndexVolumes parses each volume to compute header sizes. Stops at first error.
@@ -16,6 +19,54 @@ func IndexVolumes(fs FileSystem, volPaths []string) ([]*VolumeIndex, error) {
 			return nil, fmt.Errorf("%s: %w", p, err)
 		}
 		res = append(res, v)
+	}
+	return res, nil
+}
+
+// IndexVolumesParallel indexes volumes concurrently. Results preserve input order.
+// workers<=0 uses runtime.NumCPU(). Stops scheduling new work after first error, but in-flight tasks may finish.
+func IndexVolumesParallel(fs FileSystem, volPaths []string, workers int) ([]*VolumeIndex, error) {
+	if len(volPaths) == 0 {
+		return nil, nil
+	}
+	if workers <= 0 {
+		workers = runtime.NumCPU()
+	}
+	res := make([]*VolumeIndex, len(volPaths))
+	var firstErr atomic.Value // stores error
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	worker := func() {
+		defer wg.Done()
+		for i := range jobs {
+			if firstErr.Load() != nil { // skip work after error recorded
+				continue
+			}
+			v, err := indexSingle(fs, volPaths[i])
+			if err != nil {
+				// record first error
+				if firstErr.Load() == nil {
+					firstErr.Store(fmt.Errorf("%s: %w", volPaths[i], err))
+				}
+				continue
+			}
+			res[i] = v
+		}
+	}
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go worker()
+	}
+	for i := range volPaths {
+		if firstErr.Load() != nil { // stop scheduling new work
+			break
+		}
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+	if e := firstErr.Load(); e != nil {
+		return nil, e.(error)
 	}
 	return res, nil
 }
@@ -38,7 +89,6 @@ func indexSingle(fs FileSystem, path string) (*VolumeIndex, error) {
 			return nil, err
 		}
 	} else {
-		// If we cannot seek, we need to reset the reader to the start
 		if _, err := br.Discard(int(sigOffset)); err != nil {
 			return nil, fmt.Errorf("failed to seek to signature offset %d in %s: %w", sigOffset, path, err)
 		}
@@ -47,15 +97,28 @@ func indexSingle(fs FileSystem, path string) (*VolumeIndex, error) {
 	vi := &VolumeIndex{Path: path, Version: version}
 	switch version {
 	case VersionRar3:
-		if err := parseRar3(br, vi, sigOffset); err != nil {
-			// fallback attempt for legacy (RAR 1.5/2.x) layout
-			if err2 := parseRarLegacy(fs, path, vi, sigOffset); err2 == nil && len(vi.FileBlocks) > 0 {
+		var seeker io.ReadSeeker
+		if rs, ok := f.(io.ReadSeeker); ok {
+			seeker = rs
+		}
+		if err := parseRar3(br, seeker, vi, sigOffset); err != nil {
+			// fallback attempt for legacy (RAR 1.5/2.x) layout using existing handle
+			if rs, ok := f.(io.ReadSeeker); ok {
+				if err2 := parseRarLegacySeeker(rs, vi, sigOffset); err2 == nil && len(vi.FileBlocks) > 0 {
+					return vi, nil
+				}
+			} else if err2 := parseRarLegacy(fs, path, vi, sigOffset); err2 == nil && len(vi.FileBlocks) > 0 {
 				return vi, nil
 			}
 			return nil, err
 		}
+
 		if len(vi.FileBlocks) == 0 { // try legacy if no file headers parsed
-			if err := parseRarLegacy(fs, path, vi, sigOffset); err != nil && len(vi.FileBlocks) == 0 {
+			if rs, ok := f.(io.ReadSeeker); ok {
+				if err := parseRarLegacySeeker(rs, vi, sigOffset); err != nil && len(vi.FileBlocks) == 0 {
+					return nil, err
+				}
+			} else if err := parseRarLegacy(fs, path, vi, sigOffset); err != nil && len(vi.FileBlocks) == 0 {
 				return nil, err
 			}
 		}

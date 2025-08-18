@@ -18,8 +18,7 @@ type rar3BlockHeader struct {
 	AddSize uint32 // only if flags & 0x8000
 }
 
-func parseRar3(br *bufio.Reader, vi *VolumeIndex, baseOffset int64) error {
-	// first 7+1 bytes signature (7 + 1 null) already positioned
+func parseRar3(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffset int64) error {
 	pos := baseOffset
 	// skip signature (7 + 1)
 	if _, err := br.Discard(8); err != nil {
@@ -48,9 +47,31 @@ func parseRar3(br *bufio.Reader, vi *VolumeIndex, baseOffset int64) error {
 		} else {
 			// skip rest of block body (already consumed header bytes?)
 			toSkip := totalSize - 7 // header struct bytes read
+			if h.Flags&0x8000 != 0 {
+				toSkip -= 4 // adjust because we counted addSize in header bytes consumed by readRar3BlockHeader
+			}
 			if toSkip > 0 {
-				if _, err := br.Discard(int(toSkip)); err != nil {
-					return err
+				if seeker != nil {
+					if b := br.Buffered(); b > 0 { // drain buffer first
+						if int64(b) > toSkip {
+							b = int(toSkip)
+						}
+						if _, err := br.Discard(b); err != nil {
+							return err
+						}
+						toSkip -= int64(b)
+					}
+					if toSkip > 0 {
+						if _, err := seeker.Seek(toSkip, io.SeekCurrent); err == nil {
+							pos += totalSize
+							continue
+						}
+					}
+				}
+				if toSkip > 0 {
+					if _, err := br.Discard(int(toSkip)); err != nil {
+						return err
+					}
 				}
 			}
 		}
