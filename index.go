@@ -102,7 +102,16 @@ func indexSingle(fs FileSystem, path string) (*VolumeIndex, error) {
 			seeker = rs
 		}
 		if err := parseRar3(br, seeker, vi, sigOffset); err != nil {
-			// fallback attempt for legacy (RAR 1.5/2.x) layout using existing handle
+			if errors.Is(err, errLegacyCandidate) { // fast legacy fallback
+				if rs, ok := f.(io.ReadSeeker); ok {
+					if err2 := parseRarLegacySeeker(rs, vi, sigOffset); err2 == nil && len(vi.FileBlocks) > 0 {
+						return vi, nil
+					}
+				} else if err2 := parseRarLegacy(fs, path, vi, sigOffset); err2 == nil && len(vi.FileBlocks) > 0 {
+					return vi, nil
+				}
+			}
+			// normal error path
 			if rs, ok := f.(io.ReadSeeker); ok {
 				if err2 := parseRarLegacySeeker(rs, vi, sigOffset); err2 == nil && len(vi.FileBlocks) > 0 {
 					return vi, nil
@@ -113,7 +122,7 @@ func indexSingle(fs FileSystem, path string) (*VolumeIndex, error) {
 			return nil, err
 		}
 
-		if len(vi.FileBlocks) == 0 { // try legacy if no file headers parsed
+		if len(vi.FileBlocks) == 0 {
 			if rs, ok := f.(io.ReadSeeker); ok {
 				if err := parseRarLegacySeeker(rs, vi, sigOffset); err != nil && len(vi.FileBlocks) == 0 {
 					return nil, err
@@ -123,7 +132,6 @@ func indexSingle(fs FileSystem, path string) (*VolumeIndex, error) {
 			}
 		}
 	case VersionRar5:
-		// Attempt to provide seeker for optimized skipping
 		var seeker io.ReadSeeker
 		if rs, ok := f.(io.ReadSeeker); ok {
 			seeker = rs

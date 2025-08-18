@@ -3,8 +3,11 @@ package rarlist
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"io"
 )
+
+var errLegacyCandidate = errors.New("legacy-candidate")
 
 const (
 	rar3BlockTypeFile = 0x74
@@ -25,6 +28,7 @@ func parseRar3(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffs
 		return err
 	}
 	pos += 8
+	first := true
 	for {
 		hdrStart := pos
 		h, err := readRar3BlockHeader(br)
@@ -33,6 +37,14 @@ func parseRar3(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffs
 		}
 		if err != nil {
 			return err
+		}
+		if first {
+			// Only treat as legacy candidate if first block is a file header (0x74) AND flags do NOT contain typical RAR3 main header bits (main header type is 0x73).
+			// Our earlier heuristic misfired on constructed single-file archives starting directly with a file block.
+			if h.Type == rar3BlockTypeFile && h.Flags&0x8000 == 0 { // no addsize flag often present in main header / crafted test
+				return errLegacyCandidate
+			}
+			first = false
 		}
 		totalSize := int64(h.Size)
 		if h.Flags&0x8000 != 0 {
