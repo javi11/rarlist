@@ -10,6 +10,9 @@ import (
 	"github.com/javi11/rarlist/internal/parse"
 )
 
+// testHookParseRar5 allows tests to invoke parseRar5 directly (not exported in build tags) for edge coverage.
+var testHookParseRar5 = parseRar5
+
 // parseRar5 implements spec-based parsing and collects all file headers.
 func parseRar5(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffset int64, fileSize int64) error {
 	if _, err := br.Discard(8); err != nil {

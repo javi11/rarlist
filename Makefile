@@ -51,7 +51,7 @@ test:
 	$(GO) test $(ARGS) ./...
 
 .PHONY: check
-check: generate go-mod-tidy golangci-lint test-race
+check: go-mod-tidy golangci-lint test-race
 
 .PHONY: git-hooks
 git-hooks:
