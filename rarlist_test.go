@@ -9,6 +9,22 @@ import (
 	"testing"
 )
 
+func encodeVarint(x uint64) []byte {
+	var out []byte
+	for {
+		b := byte(x & 0x7F)
+		x >>= 7
+		if x != 0 {
+			b |= 0x80
+			out = append(out, b)
+			continue
+		}
+		out = append(out, b)
+		break
+	}
+	return out
+}
+
 // helper to create a temp file with given bytes
 func writeTemp(t *testing.T, name string, data []byte) string {
 	t.Helper()
@@ -350,22 +366,6 @@ func TestUnsupportedVersionError(t *testing.T) {
 	// Simplest: ensure no known signature so detectSignature errors; we already test missing signature.
 	// Instead craft a file where detectSignature finds RAR3 signature but we mutate version constants? Hard.
 	// Skip: already have missing signature coverage.
-}
-
-func encodeVarint(x uint64) []byte {
-	var out []byte
-	for {
-		b := byte(x & 0x7F)
-		x >>= 7
-		if x != 0 {
-			b |= 0x80
-			out = append(out, b)
-			continue
-		}
-		out = append(out, b)
-		break
-	}
-	return out
 }
 
 func TestRar5ExtraAreaAndFlags(t *testing.T) {
