@@ -102,6 +102,9 @@ func parseRar5(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffs
 		if debug {
 			logDebug("hdr @%d type=%d flags=%#x headSize=%d extra=%d data=%d cur=%d blockSpecificEnd=%d", hdrStart, blockType, flags, headSize, extraAreaSize, dataSize, cur, blockSpecificEnd)
 		}
+		if blockType == 4 { // Archive encryption header: all subsequent headers are encrypted
+			return fmt.Errorf("%w (RAR5 headers encrypted)", ErrPasswordProtected)
+		}
 		if blockType == 2 { // File header
 			if blockSpecificEnd < cur {
 				return fmt.Errorf("blockSpecificEnd<cur")
@@ -158,13 +161,44 @@ func parseRar5(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffs
 			nameBytes := bs[bcur : bcur+int(nameLen)]
 			bcur += int(nameLen)
 			stored := compInfo == 0
-			fb := FileBlock{HeaderPos: hdrStart, HeaderSize: 4 + headSizeLen + int64(headSize), DataPos: hdrStart + 4 + headSizeLen + int64(headSize), PackedSize: int64(dataSize), Name: string(nameBytes), UnpackedSize: int64(unpSizeVal), Stored: stored}
+			// Detect encryption via extra area records (type 0x01 = File encryption)
+			encrypted := false
+			if extraAreaSize > 0 {
+				extra := headData[blockSpecificEnd:int(headSize)]
+				ecur := 0
+				for ecur < len(extra) {
+					sz, n, e := parse.ReadVarintFromSlice(extra[ecur:])
+					if e != nil {
+						// Malformed extras: ignore gracefully
+						break
+					}
+					ecur += int(n)
+					if ecur >= len(extra) {
+						break
+					}
+					typ, n2, e := parse.ReadVarintFromSlice(extra[ecur:])
+					if e != nil {
+						break
+					}
+					ecur += int(n2)
+					if typ == 0x01 { // File encryption record
+						encrypted = true
+					}
+					// size counts from Type field. We already consumed type varint (n2), so skip remaining
+					remain := int(sz) - int(n2)
+					if remain < 0 || ecur+remain > len(extra) {
+						break
+					}
+					ecur += remain
+				}
+			}
+			fb := FileBlock{HeaderPos: hdrStart, HeaderSize: 4 + headSizeLen + int64(headSize), DataPos: hdrStart + 4 + headSizeLen + int64(headSize), PackedSize: int64(dataSize), Name: string(nameBytes), UnpackedSize: int64(unpSizeVal), Stored: stored, Encrypted: encrypted}
 			vi.FileBlocks = append(vi.FileBlocks, fb)
 			if vi.TotalHeaderBytes == 0 {
 				vi.TotalHeaderBytes = fb.DataPos
 			}
 			if debug {
-				logDebug("file name=%s unpacked=%d packed=%d stored=%v", fb.Name, unpSizeVal, dataSize, stored)
+				logDebug("file name=%s unpacked=%d packed=%d stored=%v enc=%v", fb.Name, unpSizeVal, dataSize, stored, fb.Encrypted)
 			}
 		}
 		if blockType == 5 { // end of archive

@@ -3,11 +3,13 @@ package rarlist
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"io"
 )
 
 const (
 	rar3BlockTypeFile = 0x74
+	rar3BlockTypeMain = 0x73
 )
 
 type rar3BlockHeader struct {
@@ -20,11 +22,23 @@ type rar3BlockHeader struct {
 
 func parseRar3(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffset int64) error {
 	pos := baseOffset
-	// skip signature (7 + 1)
-	if _, err := br.Discard(8); err != nil {
+	// RAR3 signature is 7 bytes: "Rar!\x1A\x07\x00"
+	if _, err := br.Discard(7); err != nil {
 		return err
 	}
-	pos += 8
+	pos += 7
+	// Align in case some generators insert a pad byte after signature (seen in tests)
+	if b, _ := br.Peek(3); len(b) >= 3 {
+		// b[2] should be a known block type (0x73 main or 0x74 file)
+		if b[2] != 0x73 && b[2] != 0x74 {
+			// If the first byte is zero, treat it as padding and discard one more to align
+			if b[0] == 0x00 {
+				if _, err := br.Discard(1); err == nil {
+					pos += 1
+				}
+			}
+		}
+	}
 	for {
 		hdrStart := pos
 		h, err := readRar3BlockHeader(br)
@@ -37,6 +51,14 @@ func parseRar3(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffs
 		totalSize := int64(h.Size)
 		if h.Flags&0x8000 != 0 {
 			totalSize += int64(h.AddSize)
+		}
+		// Detect encrypted headers at main archive header (RAR 3.x)
+		if h.Type == rar3BlockTypeMain {
+			// In RAR 3.x, main header flag 0x0080 indicates encrypted headers (file names)
+			// Some archives also set 0x0200 to include an additional encrypt version byte.
+			if h.Flags&0x0080 != 0 || h.Flags&0x0200 != 0 {
+				return fmt.Errorf("%w (RAR3 headers encrypted)", ErrPasswordProtected)
+			}
 		}
 		if h.Type == rar3BlockTypeFile {
 			fb, err := parseRar3FileHeader(br, hdrStart, h, pos)
@@ -138,6 +160,7 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 	}
 	dataPos := hdrStart + headerSize
 	stored := method == 0x30 // '0' stored
+	encrypted := (bh.Flags & 0x0004) != 0
 	return FileBlock{
 		Name:         name,
 		HeaderPos:    hdrStart,
@@ -147,6 +170,7 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 		Continued:    unpSize > packSize, // simplistic heuristic
 		UnpackedSize: int64(unpSize),
 		Stored:       stored,
+		Encrypted:    encrypted,
 	}, nil
 }
 

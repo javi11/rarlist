@@ -3,6 +3,7 @@ package rarlist
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -594,6 +595,101 @@ func TestRar5ExtraAreaOverflow(t *testing.T) {
 	_, err := IndexVolumes(defaultFS, []string{p})
 	if err == nil {
 		t.Fatalf("expected overflow error")
+	}
+}
+
+func TestRar3MainHeaderEncrypted_EarlyError(t *testing.T) {
+	// Build RAR3 with a main header (0x73) having the encrypted header flag (0x0080)
+	sig := []byte("Rar!\x1A\x07\x00")
+	// main header: CRC(2) Type(1=0x73) Flags(2) Size(2)
+	flags := uint16(0x0080)
+	main := []byte{0x00, 0x00, 0x73, byte(flags), byte(flags >> 8), 0x07, 0x00}
+	p := writeTemp(t, "rar3_enc_main.rar", append(sig, main...))
+	_, err := ListFiles(p)
+	if err == nil {
+		t.Fatalf("expected password protected error for RAR3 encrypted headers")
+	}
+	if !errors.Is(err, ErrPasswordProtected) {
+		t.Fatalf("want ErrPasswordProtected, got %v", err)
+	}
+}
+
+func TestListFiles_Compressed_RAR3_ReturnsError(t *testing.T) {
+	// RAR3 signature + one file header with method != 0x30 (compressed)
+	sig := append([]byte("Rar!\x1A\x07\x00"), 0x00)
+	name := []byte("compressed.bin")
+	nameLen := len(name)
+	headerSize := 7 + 25 + nameLen
+	hb := make([]byte, 0, headerSize)
+	hb = append(hb, 0x00, 0x00) // CRC
+	hb = append(hb, 0x74)       // type file
+	hb = append(hb, 0x00, 0x00) // flags (no addsize/high/unicode)
+	hb = append(hb, byte(headerSize), 0x00)
+	fixed := make([]byte, 25)
+	fixed[0] = 5     // packSize
+	fixed[4] = 10    // unpSize
+	fixed[18] = 0x33 // a non-stored compression method
+	fixed[19] = byte(nameLen)
+	fixed[20] = 0x00
+	hb = append(hb, fixed...)
+	hb = append(hb, name...)
+	p := writeTemp(t, "compressed.rar", append(sig, hb...))
+	_, err := ListFiles(p)
+	if err == nil {
+		t.Fatalf("expected compressed unsupported error")
+	}
+	if !errors.Is(err, ErrCompressedNotSupported) {
+		t.Fatalf("want ErrCompressedNotSupported, got %v", err)
+	}
+}
+
+func TestListFiles_Password_RAR3_ReturnsError(t *testing.T) {
+	// RAR3 signature + one file header with encrypted flag (0x0004) in block header flags
+	sig := append([]byte("Rar!\x1A\x07\x00"), 0x00)
+	name := []byte("secret.txt")
+	nameLen := len(name)
+	headerSize := 7 + 25 + nameLen
+	flags := uint16(0x0004) // encrypted header flag for file block
+	hb := make([]byte, 0, headerSize)
+	hb = append(hb, 0x00, 0x00) // CRC
+	hb = append(hb, 0x74)       // type file
+	hb = append(hb, byte(flags), byte(flags>>8))
+	hb = append(hb, byte(headerSize), 0x00)
+	fixed := make([]byte, 25)
+	fixed[0] = 5
+	fixed[4] = 5
+	fixed[18] = 0x30
+	fixed[19] = byte(nameLen)
+	fixed[20] = 0x00
+	hb = append(hb, fixed...)
+	hb = append(hb, name...)
+	p := writeTemp(t, "encrypted.rar", append(sig, hb...))
+	_, err := ListFiles(p)
+	if err == nil {
+		t.Fatalf("expected password protected error")
+	}
+	if !errors.Is(err, ErrPasswordProtected) {
+		t.Fatalf("want ErrPasswordProtected, got %v", err)
+	}
+}
+
+func TestListFiles_Password_RAR5_ReturnsError(t *testing.T) {
+	// RAR5 with an Archive Encryption Header (block type 4)
+	sig := []byte("Rar!\x1A\x07\x01\x00")
+	// headData: blockType=4, flags=0
+	headData := append(encodeVarint(4), encodeVarint(0)...)
+	buf := bytes.NewBuffer(nil)
+	buf.Write(sig)
+	buf.Write([]byte{0, 0, 0, 0}) // CRC
+	buf.Write(encodeVarint(uint64(len(headData))))
+	buf.Write(headData)
+	p := writeTemp(t, "enc5.rar", buf.Bytes())
+	_, err := ListFiles(p)
+	if err == nil {
+		t.Fatalf("expected password protected error for rar5")
+	}
+	if !errors.Is(err, ErrPasswordProtected) {
+		t.Fatalf("want ErrPasswordProtected, got %v", err)
 	}
 }
 

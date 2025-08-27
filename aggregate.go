@@ -1,5 +1,7 @@
 package rarlist
 
+import "fmt"
+
 // FileEntry summarizes a file within a volume.
 type FileEntry struct {
 	Name       string
@@ -53,6 +55,7 @@ type AggregatedFilePart struct {
 	PackedSize   int64  `json:"packedSize"`
 	UnpackedSize int64  `json:"unpackedSize"`
 	Stored       bool   `json:"stored"`
+	Encrypted    bool   `json:"encrypted"`
 }
 
 // AggregatedFile groups all parts (headers) for a given file name across volumes.
@@ -61,6 +64,8 @@ type AggregatedFile struct {
 	TotalPackedSize   int64                `json:"totalPackedSize"`
 	TotalUnpackedSize int64                `json:"totalUnpackedSize"`
 	Parts             []AggregatedFilePart `json:"parts"`
+	AnyEncrypted      bool                 `json:"anyEncrypted"`
+	AllStored         bool                 `json:"allStored"`
 }
 
 // AggregateFiles builds aggregated file listing from volume indexes.
@@ -74,15 +79,21 @@ func AggregateFiles(vs []*VolumeIndex) []AggregatedFile {
 			}
 			ag, ok := m[fb.Name]
 			if !ok {
-				ag = &AggregatedFile{Name: fb.Name}
+				ag = &AggregatedFile{Name: fb.Name, AllStored: true}
 				m[fb.Name] = ag
 				order = append(order, fb.Name)
 			}
-			ag.Parts = append(ag.Parts, AggregatedFilePart{Path: v.Path, DataOffset: fb.DataPos, PackedSize: fb.PackedSize, UnpackedSize: fb.UnpackedSize, Stored: fb.Stored})
+			ag.Parts = append(ag.Parts, AggregatedFilePart{Path: v.Path, DataOffset: fb.DataPos, PackedSize: fb.PackedSize, UnpackedSize: fb.UnpackedSize, Stored: fb.Stored, Encrypted: fb.Encrypted})
 			ag.TotalPackedSize += fb.PackedSize
 			// Only take first reported unpacked size (do not sum across parts)
 			if ag.TotalUnpackedSize == 0 && fb.UnpackedSize > 0 {
 				ag.TotalUnpackedSize = fb.UnpackedSize
+			}
+			if fb.Encrypted {
+				ag.AnyEncrypted = true
+			}
+			if !fb.Stored {
+				ag.AllStored = false
 			}
 		}
 	}
@@ -102,6 +113,17 @@ func ListFilesFS(fs FileSystem, first string) ([]AggregatedFile, error) {
 	idx, err := IndexVolumesParallel(fs, vols, 0)
 	if err != nil {
 		return nil, err
+	}
+	// Validate that files are not compressed or password protected
+	for _, v := range idx {
+		for _, fb := range v.FileBlocks {
+			if fb.Encrypted {
+				return nil, fmt.Errorf("%w: %s (%s)", ErrPasswordProtected, fb.Name, v.Path)
+			}
+			if !fb.Stored {
+				return nil, fmt.Errorf("%w: %s (%s)", ErrCompressedNotSupported, fb.Name, v.Path)
+			}
+		}
 	}
 	return AggregateFiles(idx), nil
 }

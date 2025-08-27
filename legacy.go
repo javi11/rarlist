@@ -10,11 +10,28 @@ import (
 	"github.com/javi11/rarlist/internal/util"
 )
 
-// scanLegacy performs the byte scan starting AFTER signature (caller positions reader at baseOffset+8).
+// scanLegacy performs the byte scan starting AFTER signature (caller positions reader at baseOffset+sigLen).
 func scanLegacy(br *bufio.Reader, vi *VolumeIndex, baseOffset int64) error {
 	// Reduced scan window for speed (legacy headers appear near start). 64 KiB is typically sufficient.
 	const scanLimit = 64 * 1024
 	peekBuf, _ := br.Peek(scanLimit)
+	// Early check: detect encrypted headers via main header (type 0x73) flags (0x0080)
+	if len(peekBuf) >= 7 {
+		// Scan first 64K window for a plausible main header: 2 bytes CRC, 0x73 type, flags, size
+		// We don’t require exact alignment to avoid off-by-one due to padding.
+		for i := 0; i+6 < len(peekBuf) && i < 512; i++ { // limit small scan range near start
+			if peekBuf[i+2] == 0x73 { // type
+				flags := binary.LittleEndian.Uint16(peekBuf[i+3 : i+5])
+				// Basic sanity on size: at least 7
+				if binary.LittleEndian.Uint16(peekBuf[i+5:i+7]) >= 7 {
+					if flags&0x0080 != 0 || flags&0x0200 != 0 {
+						return fmt.Errorf("%w (legacy headers encrypted)", ErrPasswordProtected)
+					}
+					break
+				}
+			}
+		}
+	}
 	searchStart := 0
 	for searchStart < len(peekBuf) {
 		pos := bytes.IndexByte(peekBuf[searchStart:], 0x74)
@@ -35,7 +52,12 @@ func scanLegacy(br *bufio.Reader, vi *VolumeIndex, baseOffset int64) error {
 		}
 		headEnd := hdrStart + int(size)
 		if headEnd > len(peekBuf) {
-			break
+			// Attempt to extend peek window to cover the full header before giving up.
+			if nb, _ := br.Peek(headEnd); len(nb) >= headEnd {
+				peekBuf = nb
+			} else {
+				break
+			}
 		}
 		fixedStart := hdrStart + 7
 		if fixedStart+25 > headEnd {
@@ -78,8 +100,10 @@ func scanLegacy(br *bufio.Reader, vi *VolumeIndex, baseOffset int64) error {
 		packSize := (int64(highPack) << 32) | int64(packSize32)
 		unpSize := (int64(highUnp) << 32) | int64(unpSize32)
 		stored := method == 0x30
-		fileHeaderPos := baseOffset + 8 + int64(hdrStart)
-		fb := FileBlock{Name: name, HeaderPos: fileHeaderPos, HeaderSize: int64(size), DataPos: fileHeaderPos + int64(size), PackedSize: int64(packSize), UnpackedSize: int64(unpSize), Stored: stored}
+		encrypted := (flags & 0x0004) != 0
+	// RAR3/legacy signature is 7 bytes; our detectSignature returns the sig start (baseOffset)
+	fileHeaderPos := baseOffset + 7 + int64(hdrStart)
+		fb := FileBlock{Name: name, HeaderPos: fileHeaderPos, HeaderSize: int64(size), DataPos: fileHeaderPos + int64(size), PackedSize: int64(packSize), UnpackedSize: int64(unpSize), Stored: stored, Encrypted: encrypted}
 		vi.FileBlocks = append(vi.FileBlocks, fb)
 		vi.TotalHeaderBytes = fb.DataPos
 
@@ -90,7 +114,7 @@ func scanLegacy(br *bufio.Reader, vi *VolumeIndex, baseOffset int64) error {
 
 // parseRarLegacySeeker reuses an already opened ReadSeeker positioned at start; it seeks to baseOffset+8 then scans.
 func parseRarLegacySeeker(rs io.ReadSeeker, vi *VolumeIndex, baseOffset int64) error {
-	if _, err := rs.Seek(baseOffset+8, io.SeekStart); err != nil {
+	if _, err := rs.Seek(baseOffset+7, io.SeekStart); err != nil {
 		return err
 	}
 	br := bufio.NewReader(rs)
@@ -109,7 +133,7 @@ func parseRarLegacy(fs FileSystem, path string, vi *VolumeIndex, baseOffset int6
 	}
 	// Non-seeker fallback: manual discard then scan
 	var r io.Reader = f
-	d := baseOffset + 8
+	d := baseOffset + 7
 	if d < 0 {
 		d = 0
 	}
