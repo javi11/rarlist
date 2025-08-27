@@ -102,6 +102,10 @@ func indexSingle(fs FileSystem, path string) (*VolumeIndex, error) {
 			seeker = rs
 		}
 		if err := parseRar3(br, seeker, vi, sigOffset); err != nil {
+			// If headers are encrypted/password-protected, don't attempt legacy fallback; bubble up immediately.
+			if errors.Is(err, ErrPasswordProtected) {
+				return nil, err
+			}
 			// fallback attempt for legacy (RAR 1.5/2.x) layout using existing handle
 			if rs, ok := f.(io.ReadSeeker); ok {
 				if err2 := parseRarLegacySeeker(rs, vi, sigOffset); err2 == nil && len(vi.FileBlocks) > 0 {

@@ -1,5 +1,7 @@
 package rarlist
 
+import "errors"
+
 // VolumeIndex holds header size accounting for a volume file.
 type VolumeIndex struct {
 	Path             string
@@ -18,6 +20,13 @@ type FileBlock struct {
 	Continued    bool  // continues in next volume
 	UnpackedSize int64 // original size (if available)
 	Stored       bool  // true if file data is stored (no compression)
+	Encrypted    bool  // true if file data is encrypted/password-protected
 }
 
 func (v *VolumeIndex) DataOffset() int64 { return v.TotalHeaderBytes }
+
+// Sentinel errors surfaced by high-level APIs like ListFiles/ListFilesFS.
+var (
+	ErrPasswordProtected      = errors.New("password protected")
+	ErrCompressedNotSupported = errors.New("compressed file unsupported")
+)
