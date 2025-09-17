@@ -101,7 +101,7 @@ func indexSingle(fs FileSystem, path string) (*VolumeIndex, error) {
 		if rs, ok := f.(io.ReadSeeker); ok {
 			seeker = rs
 		}
-		if err := parseRar3(br, seeker, vi, sigOffset); err != nil {
+		if err := parseRar3(br, seeker, vi, sigOffset, fileSize); err != nil {
 			// If headers are encrypted/password-protected, don't attempt legacy fallback; bubble up immediately.
 			if errors.Is(err, ErrPasswordProtected) {
 				return nil, err

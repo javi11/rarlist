@@ -12,15 +12,16 @@ type VolumeIndex struct {
 
 // FileBlock represents a file header encountered (RAR3 or RAR5 simplified)
 type FileBlock struct {
-	Name         string
-	HeaderPos    int64 // offset where header starts
-	HeaderSize   int64 // full header size
-	DataPos      int64 // where the file's data would start within this volume
-	PackedSize   int64 // size stored (for stored == original)
-	Continued    bool  // continues in next volume
-	UnpackedSize int64 // original size (if available)
-	Stored       bool  // true if file data is stored (no compression)
-	Encrypted    bool  // true if file data is encrypted/password-protected
+	Name           string
+	HeaderPos      int64 // offset where header starts
+	HeaderSize     int64 // full header size
+	DataPos        int64 // where the file's data would start within this volume
+	PackedSize     int64 // size stored (for extraction - uses header value for compatibility)
+	VolumeDataSize int64 // actual data size in this specific volume (for reporting)
+	Continued      bool  // continues in next volume
+	UnpackedSize   int64 // original size (if available)
+	Stored         bool  // true if file data is stored (no compression)
+	Encrypted      bool  // true if file data is encrypted/password-protected
 }
 
 func (v *VolumeIndex) DataOffset() int64 { return v.TotalHeaderBytes }

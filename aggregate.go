@@ -21,7 +21,7 @@ func BuildVolumeFiles(vs []*VolumeIndex) []VolumeFiles {
 	for _, v := range vs {
 		vf := VolumeFiles{Path: v.Path}
 		for _, fb := range v.FileBlocks {
-			vf.Files = append(vf.Files, FileEntry{Name: fb.Name, DataOffset: fb.DataPos, PackedSize: fb.PackedSize})
+			vf.Files = append(vf.Files, FileEntry{Name: fb.Name, DataOffset: fb.DataPos, PackedSize: fb.VolumeDataSize})
 		}
 		out = append(out, vf)
 	}
@@ -83,8 +83,8 @@ func AggregateFiles(vs []*VolumeIndex) []AggregatedFile {
 				m[fb.Name] = ag
 				order = append(order, fb.Name)
 			}
-			ag.Parts = append(ag.Parts, AggregatedFilePart{Path: v.Path, DataOffset: fb.DataPos, PackedSize: fb.PackedSize, UnpackedSize: fb.UnpackedSize, Stored: fb.Stored, Encrypted: fb.Encrypted})
-			ag.TotalPackedSize += fb.PackedSize
+			ag.Parts = append(ag.Parts, AggregatedFilePart{Path: v.Path, DataOffset: fb.DataPos, PackedSize: fb.VolumeDataSize, UnpackedSize: fb.UnpackedSize, Stored: fb.Stored, Encrypted: fb.Encrypted})
+			ag.TotalPackedSize += fb.VolumeDataSize
 			// Only take first reported unpacked size (do not sum across parts)
 			if ag.TotalUnpackedSize == 0 && fb.UnpackedSize > 0 {
 				ag.TotalUnpackedSize = fb.UnpackedSize

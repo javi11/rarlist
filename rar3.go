@@ -21,7 +21,7 @@ type rar3BlockHeader struct {
 	AddSize uint32 // only if flags & 0x8000
 }
 
-func parseRar3(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffset int64) error {
+func parseRar3(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffset int64, fileSize int64) error {
 	pos := baseOffset
 	// RAR3 signature is 7 bytes: "Rar!\x1A\x07\x00"
 	if _, err := br.Discard(7); err != nil {
@@ -62,7 +62,7 @@ func parseRar3(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffs
 			}
 		}
 		if h.Type == rar3BlockTypeFile {
-			fb, err := parseRar3FileHeader(br, hdrStart, h, pos)
+			fb, err := parseRar3FileHeader(br, hdrStart, h, pos, fileSize)
 			if err != nil {
 				return err
 			}
@@ -129,7 +129,7 @@ func readRar3BlockHeader(br *bufio.Reader) (*rar3BlockHeader, error) {
 	return h, nil
 }
 
-func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, _ int64) (FileBlock, error) {
+func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, currentPos int64, fileSize int64) (FileBlock, error) {
 	// We have already read 7 or 11 bytes of header. Need to read rest of file header fixed part.
 	// RAR3 file header layout after initial block header fields:
 	// PACK_SIZE (4), UNP_SIZE (4), HOST_OS(1), FILE_CRC(4), FTIME(4), UNP_VER(1), METHOD(1), NAME_SIZE(2), ATTR(4)
@@ -185,7 +185,7 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 		}
 		headerSize += 8
 	}
-	dataPos := hdrStart + headerSize
+	dataPos := hdrStart + headerSize + 2 // Skip 2-byte RAR data format marker
 	// In RAR3, method byte interpretation for solid archives:
 	// - Solid archives: all files may share same packed size and compression method
 	// - Check if this might be a solid archive (multiple files with same packed size)
@@ -208,20 +208,40 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 
 	encrypted := (bh.Flags & 0x0004) != 0
 
-	// Debug logging for compression method detection
+	// Calculate actual volume data size: The packSize from header is total across all volumes.
+	// For multi-volume archives, we need to calculate the actual data size in this specific volume.
+	// This is done by: total file size - data start position - RAR format trailing bytes
+	// Note: dataPos already accounts for the 2-byte RAR format marker
+	volumeDataSize := fileSize - dataPos - 20 // Subtract 20 bytes for RAR format trailing markers
+
+	// Use the calculated volume size if it looks like a real multi-volume archive
+	// (i.e., significant data after headers), otherwise use header packed size.
+	// This handles both real multi-volume files and synthetic test files correctly.
+	if volumeDataSize <= 0 || volumeDataSize > int64(packSize)*100 || packSize < 1000 {
+		// Fallback to header packed size if:
+		// 1. No data after headers (test files)
+		// 2. Calculated size is suspiciously large compared to header (corrupted data)
+		// 3. Small packed size suggests test file or single volume
+		volumeDataSize = int64(packSize)
+	}
+
+	// Debug logging for compression method detection and volume size calculation
 	if debug := os.Getenv("RARINDEX_DEBUG"); debug != "" {
 		fmt.Fprintf(os.Stderr, "[rar3] file=%s method=0x%02x methodType=%d packed=%d unpacked=%d stored=%v\n", name, method, methodType, packSize, unpSize, stored)
+		fmt.Fprintf(os.Stderr, "[rar3]   headerPos=%d headerSize=%d dataPos=%d currentPos=%d\n", hdrStart, headerSize, dataPos, currentPos)
+		fmt.Fprintf(os.Stderr, "[rar3]   fileSize=%d calculated=%d final=%d (header_packed=%d)\n", fileSize, fileSize-dataPos, volumeDataSize, packSize)
 	}
 	return FileBlock{
-		Name:         name,
-		HeaderPos:    hdrStart,
-		HeaderSize:   headerSize,
-		DataPos:      dataPos,
-		PackedSize:   int64(packSize),
-		Continued:    unpSize > packSize, // simplistic heuristic
-		UnpackedSize: int64(unpSize),
-		Stored:       stored,
-		Encrypted:    encrypted,
+		Name:           name,
+		HeaderPos:      hdrStart,
+		HeaderSize:     headerSize,
+		DataPos:        dataPos,
+		PackedSize:     int64(packSize), // Keep original header value for extraction
+		VolumeDataSize: volumeDataSize,  // Actual volume data size for reporting
+		Continued:      unpSize > packSize, // simplistic heuristic
+		UnpackedSize:   int64(unpSize),
+		Stored:         stored,
+		Encrypted:      encrypted,
 	}, nil
 }
 

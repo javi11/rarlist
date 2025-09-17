@@ -103,7 +103,7 @@ func scanLegacy(br *bufio.Reader, vi *VolumeIndex, baseOffset int64) error {
 		encrypted := (flags & 0x0004) != 0
 	// RAR3/legacy signature is 7 bytes; our detectSignature returns the sig start (baseOffset)
 	fileHeaderPos := baseOffset + 7 + int64(hdrStart)
-		fb := FileBlock{Name: name, HeaderPos: fileHeaderPos, HeaderSize: int64(size), DataPos: fileHeaderPos + int64(size), PackedSize: int64(packSize), UnpackedSize: int64(unpSize), Stored: stored, Encrypted: encrypted}
+		fb := FileBlock{Name: name, HeaderPos: fileHeaderPos, HeaderSize: int64(size), DataPos: fileHeaderPos + int64(size), PackedSize: int64(packSize), VolumeDataSize: int64(packSize), UnpackedSize: int64(unpSize), Stored: stored, Encrypted: encrypted}
 		vi.FileBlocks = append(vi.FileBlocks, fb)
 		vi.TotalHeaderBytes = fb.DataPos
 
