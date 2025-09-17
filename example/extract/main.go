@@ -52,6 +52,12 @@ func main() {
 			continue
 		}
 		outPath := filepath.Join(outDir, af.Name)
+
+		err := os.MkdirAll(filepath.Dir(outPath), 0o755)
+		if err != nil {
+			log.Fatalf("create output dir: %v", err)
+		}
+
 		// Create (or truncate) output file for this aggregated logical file
 		outF, err := os.Create(outPath)
 		if err != nil {

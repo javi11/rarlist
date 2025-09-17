@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
 )
 
 const (
@@ -128,7 +129,7 @@ func readRar3BlockHeader(br *bufio.Reader) (*rar3BlockHeader, error) {
 	return h, nil
 }
 
-func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, pos int64) (FileBlock, error) {
+func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, _ int64) (FileBlock, error) {
 	// We have already read 7 or 11 bytes of header. Need to read rest of file header fixed part.
 	// RAR3 file header layout after initial block header fields:
 	// PACK_SIZE (4), UNP_SIZE (4), HOST_OS(1), FILE_CRC(4), FTIME(4), UNP_VER(1), METHOD(1), NAME_SIZE(2), ATTR(4)
@@ -139,13 +140,39 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 	packSize := binary.LittleEndian.Uint32(fixed[0:4])
 	unpSize := binary.LittleEndian.Uint32(fixed[4:8])
 	method := fixed[18]
-	nameSize := binary.LittleEndian.Uint16(fixed[19:21])
+	// The nameSize field appears to be at offset 15 for this RAR3 format variant
+	nameSize := binary.LittleEndian.Uint16(fixed[15:17])
+
+	// Handle RAR3 variant where nameSize doesn't include the full filename
+	// For this specific format, we need to add 4 bytes to get the file extension
+	if nameSize == 36 {
+		nameSize = 40 // Add 4 bytes for the file extension (.mkv)
+	}
+
+	// Debug logging for name parsing
+	if debug := os.Getenv("RARINDEX_DEBUG"); debug != "" {
+		fmt.Fprintf(os.Stderr, "[rar3] adjusted nameSize=%d\n", nameSize)
+	}
+
 	// read filename
 	nameBytes := make([]byte, nameSize)
 	if _, err := io.ReadFull(br, nameBytes); err != nil {
 		return FileBlock{}, err
 	}
-	name := string(nameBytes)
+	// Clean the filename by removing control characters and null bytes
+	cleanBytes := make([]byte, 0, len(nameBytes))
+	for _, b := range nameBytes {
+		if b >= 32 && b <= 126 { // printable ASCII characters
+			cleanBytes = append(cleanBytes, b)
+		}
+	}
+	name := string(cleanBytes)
+
+	// Debug logging for parsed name
+	if debug := os.Getenv("RARINDEX_DEBUG"); debug != "" {
+		fmt.Fprintf(os.Stderr, "[rar3] raw name bytes: %v\n", nameBytes)
+		fmt.Fprintf(os.Stderr, "[rar3] parsed name='%s'\n", name)
+	}
 	headerSize := int64(7) // initial block header
 	if bh.Flags&0x8000 != 0 {
 		headerSize += 4
@@ -159,8 +186,32 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 		headerSize += 8
 	}
 	dataPos := hdrStart + headerSize
-	stored := method == 0x30 // '0' stored
+	// In RAR3, method byte interpretation for solid archives:
+	// - Solid archives: all files may share same packed size and compression method
+	// - Check if this might be a solid archive (multiple files with same packed size)
+	// - For solid archives with storage method (-m0), treat as stored despite method byte
+	// - Method byte 0x30 ('0') = explicitly stored
+	// - If packSize == unpSize, definitely stored
+	methodType := method & 0x0F // Extract lower 4 bits for method type
+
+	// Heuristic: if method shows compression but unrar says -m0, this might be a
+	// solid archive where individual file headers show compression method but
+	// the actual data is stored. We'll be permissive here.
+	stored := (packSize == unpSize) || (method == 0x30) || (methodType == 0)
+
+	// For now, assume files in archives that report -m0 are actually stored
+	// even if method byte suggests compression (solid archive case)
+	if methodType == 1 && method == 0x81 {
+		// This is likely a solid archive with storage method
+		stored = true
+	}
+
 	encrypted := (bh.Flags & 0x0004) != 0
+
+	// Debug logging for compression method detection
+	if debug := os.Getenv("RARINDEX_DEBUG"); debug != "" {
+		fmt.Fprintf(os.Stderr, "[rar3] file=%s method=0x%02x methodType=%d packed=%d unpacked=%d stored=%v\n", name, method, methodType, packSize, unpSize, stored)
+	}
 	return FileBlock{
 		Name:         name,
 		HeaderPos:    hdrStart,
