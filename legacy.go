@@ -68,7 +68,7 @@ func scanLegacy(br *bufio.Reader, vi *VolumeIndex, baseOffset int64) error {
 		packSize32 := binary.LittleEndian.Uint32(fixed[0:4])
 		unpSize32 := binary.LittleEndian.Uint32(fixed[4:8])
 		method := fixed[18]
-		nameSize := binary.LittleEndian.Uint16(fixed[19:21])
+		nameSize := binary.LittleEndian.Uint16(fixed[15:17]) // Match main RAR3 parser offset
 		offset := fixedStart + 25
 		var highPack, highUnp uint32
 		if flags&0x0100 != 0 {

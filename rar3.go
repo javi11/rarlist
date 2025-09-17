@@ -144,8 +144,8 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 	nameSize := binary.LittleEndian.Uint16(fixed[15:17])
 
 	// Handle RAR3 variant where nameSize doesn't include the full filename
-	// For this specific format, we need to add 4 bytes to get the file extension
-	if nameSize == 36 {
+	// For solid archives with 36-char hex filenames, add 4 bytes for extension
+	if nameSize == 36 && method == 0x81 {
 		nameSize = 40 // Add 4 bytes for the file extension (.mkv)
 	}
 

@@ -50,9 +50,9 @@ func buildRar3FileHeader(name string, packSize, unpSize uint32) []byte {
 	fixed := make([]byte, 25)
 	fixed[0] = byte(packSize)
 	fixed[4] = byte(unpSize)
+	fixed[15] = byte(nameLen) // name size LE (at correct offset)
+	fixed[16] = 0x00
 	fixed[18] = 0x30 // stored method
-	fixed[19] = byte(nameLen)
-	fixed[20] = 0x00
 	b = append(b, fixed...)
 	b = append(b, nameBytes...)
 	return b
@@ -77,9 +77,9 @@ func TestParseRar3(t *testing.T) {
 	unpSize := uint32(5)
 	fixed[0] = byte(packSize)
 	fixed[4] = byte(unpSize)
+	fixed[15] = byte(nameLen) // name size LE (moved to correct offset)
+	fixed[16] = 0x00
 	fixed[18] = 0x30          // method stored
-	fixed[19] = byte(nameLen) // name size LE
-	fixed[20] = 0x00
 	hb = append(hb, fixed...)
 	hb = append(hb, name...)
 	data := append(append([]byte{}, sig...), hb...)
@@ -499,9 +499,9 @@ func TestRar3FileHeaderAddSize(t *testing.T) {
 	fixed := make([]byte, 25)
 	fixed[0] = 1 // packSize
 	fixed[4] = 1 // unpSize
+	fixed[15] = byte(nameLen) // name size LE (at correct offset)
+	fixed[16] = 0x00
 	fixed[18] = 0x30
-	fixed[19] = byte(nameLen)
-	fixed[20] = 0
 	buf := bytes.NewBuffer(nil)
 	buf.Write(sig)
 	buf.Write(bh)
@@ -658,9 +658,9 @@ func TestListFiles_Password_RAR3_ReturnsError(t *testing.T) {
 	fixed := make([]byte, 25)
 	fixed[0] = 5
 	fixed[4] = 5
+	fixed[15] = byte(nameLen) // name size LE (at correct offset)
+	fixed[16] = 0x00
 	fixed[18] = 0x30
-	fixed[19] = byte(nameLen)
-	fixed[20] = 0x00
 	hb = append(hb, fixed...)
 	hb = append(hb, name...)
 	p := writeTemp(t, "encrypted.rar", append(sig, hb...))
@@ -797,9 +797,9 @@ func TestLegacyHighSizeUnicode(t *testing.T) {
 	hdr = append(hdr, byte(flags), byte(flags>>8))
 	hdr = append(hdr, byte(size), 0x00)
 	fixed := make([]byte, 25)
+	fixed[15] = byte(nameLen) // name size LE (at correct offset)
+	fixed[16] = 0x00
 	fixed[18] = 0x30
-	fixed[19] = byte(nameLen)
-	fixed[20] = 0x00
 	// put low sizes
 	fixed[0] = 0x34
 	fixed[4] = 0x34
