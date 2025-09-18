@@ -140,18 +140,31 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 	packSize := binary.LittleEndian.Uint32(fixed[0:4])
 	unpSize := binary.LittleEndian.Uint32(fixed[4:8])
 	method := fixed[18]
-	// The nameSize field appears to be at offset 15 for this RAR3 format variant
-	nameSize := binary.LittleEndian.Uint16(fixed[15:17])
+	// RAR3 file header structure: nameSize is at position 19-20 (0-indexed) of the fixed part
+	nameSize := binary.LittleEndian.Uint16(fixed[19:21])
 
-	// Handle RAR3 variant where nameSize doesn't include the full filename
-	// For solid archives with 36-char hex filenames, add 4 bytes for extension
-	if nameSize == 36 && method == 0x81 {
-		nameSize = 40 // Add 4 bytes for the file extension (.mkv)
+	// If nameSize is 0, calculate based on block header size
+	if nameSize == 0 {
+		// The block Size field contains only the header size, not file data
+		// It includes: header (7 or 11) + fixed part (25) + name + optional fields
+		headerSize := int64(7)
+		if bh.Flags&0x8000 != 0 {
+			headerSize = 11
+		}
+		totalHeaderSize := int64(bh.Size) // This is just the header, not file data
+		// Remaining space for name (before any salt or other optional fields)
+		remainingBytes := totalHeaderSize - headerSize - 25
+
+		if remainingBytes > 0 && remainingBytes < 512 { // Reasonable filename length
+			nameSize = uint16(remainingBytes)
+		}
 	}
 
 	// Debug logging for name parsing
 	if debug := os.Getenv("RARINDEX_DEBUG"); debug != "" {
-		fmt.Fprintf(os.Stderr, "[rar3] adjusted nameSize=%d\n", nameSize)
+		fmt.Fprintf(os.Stderr, "[rar3] fixed[19:21]=[%02x %02x], nameSize=%d\n", fixed[19], fixed[20], nameSize)
+		fmt.Fprintf(os.Stderr, "[rar3] method=0x%02x packSize=%d unpSize=%d\n", method, packSize, unpSize)
+		fmt.Fprintf(os.Stderr, "[rar3] block size=%d, flags=0x%04x\n", bh.Size, bh.Flags)
 	}
 
 	// read filename
@@ -159,14 +172,57 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 	if _, err := io.ReadFull(br, nameBytes); err != nil {
 		return FileBlock{}, err
 	}
-	// Clean the filename by removing control characters and null bytes
-	cleanBytes := make([]byte, 0, len(nameBytes))
-	for _, b := range nameBytes {
-		if b >= 32 && b <= 126 { // printable ASCII characters
-			cleanBytes = append(cleanBytes, b)
+
+	// Parse the filename from nameBytes
+	var name string
+	if len(nameBytes) > 0 {
+		// Check for RAR format variation with extra bytes before filename
+		// Pattern: control char (< 32) followed by nulls, then actual filename
+		startIdx := 0
+		if len(nameBytes) > 4 && nameBytes[0] < 32 {
+			// Check if we have the pattern: [control_char 00 00 00] before filename
+			hasExtraBytes := true
+			for i := 1; i < 4 && i < len(nameBytes); i++ {
+				if nameBytes[i] != 0 {
+					hasExtraBytes = false
+					break
+				}
+			}
+			if hasExtraBytes {
+				// Skip the first 4 bytes to get to the actual filename
+				startIdx = 4
+			}
+		}
+
+		// Extract filename starting from the determined index
+		if startIdx < len(nameBytes) {
+			// Look for null terminator from the start position
+			nullPos := -1
+			for i := startIdx; i < len(nameBytes); i++ {
+				if nameBytes[i] == 0 {
+					nullPos = i
+					break
+				}
+			}
+
+			if nullPos > startIdx {
+				name = string(nameBytes[startIdx:nullPos])
+			} else if startIdx == 0 {
+				// Original logic for backward compatibility
+				// Clean the filename by removing control characters
+				cleanBytes := make([]byte, 0, len(nameBytes))
+				for _, b := range nameBytes {
+					if b >= 32 && b <= 126 { // printable ASCII characters
+						cleanBytes = append(cleanBytes, b)
+					}
+				}
+				name = string(cleanBytes)
+			} else {
+				// Use remaining bytes after skipping extra bytes
+				name = string(nameBytes[startIdx:])
+			}
 		}
 	}
-	name := string(cleanBytes)
 
 	// Debug logging for parsed name
 	if debug := os.Getenv("RARINDEX_DEBUG"); debug != "" {
@@ -185,7 +241,7 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 		}
 		headerSize += 8
 	}
-	dataPos := hdrStart + headerSize + 2 // Skip 2-byte RAR data format marker
+	dataPos := hdrStart + headerSize // Data starts immediately after header
 	// In RAR3, method byte interpretation for solid archives:
 	// - Solid archives: all files may share same packed size and compression method
 	// - Check if this might be a solid archive (multiple files with same packed size)
@@ -236,8 +292,8 @@ func parseRar3FileHeader(br *bufio.Reader, hdrStart int64, bh *rar3BlockHeader, 
 		HeaderPos:      hdrStart,
 		HeaderSize:     headerSize,
 		DataPos:        dataPos,
-		PackedSize:     int64(packSize), // Keep original header value for extraction
-		VolumeDataSize: volumeDataSize,  // Actual volume data size for reporting
+		PackedSize:     int64(packSize),    // Keep original header value for extraction
+		VolumeDataSize: volumeDataSize,     // Actual volume data size for reporting
 		Continued:      unpSize > packSize, // simplistic heuristic
 		UnpackedSize:   int64(unpSize),
 		Stored:         stored,
