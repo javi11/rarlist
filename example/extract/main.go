@@ -37,14 +37,14 @@ func main() {
 		}
 		// Skip if any part is not stored (simplistic: require all parts stored)
 		allStored := true
-		var totalUnpacked int64
+		var totalPacked int64
 		for _, p := range af.Parts {
 			if !p.Stored {
 				allStored = false
 				break
 			}
-			if p.UnpackedSize > 0 {
-				totalUnpacked += p.UnpackedSize
+			if p.PackedSize > 0 {
+				totalPacked += p.PackedSize
 			}
 		}
 		if !allStored {
@@ -91,7 +91,7 @@ func main() {
 					written += copied
 				}()
 			}
-			fmt.Printf("Extracted %s (%d bytes written, expected around %d) from %d stored part(s)\n", af.Name, written, totalUnpacked, len(af.Parts))
+			fmt.Printf("Extracted %s (%d bytes written, expected around %d) from %d stored part(s)\n", af.Name, written, totalPacked, len(af.Parts))
 		}()
 	}
 }
