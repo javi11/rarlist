@@ -50,8 +50,8 @@ func buildRar3FileHeader(name string, packSize, unpSize uint32) []byte {
 	fixed := make([]byte, 25)
 	fixed[0] = byte(packSize)
 	fixed[4] = byte(unpSize)
-	fixed[15] = byte(nameLen) // name size LE (at correct offset)
-	fixed[16] = 0x00
+	fixed[19] = byte(nameLen) // name size LE at offset 19
+	fixed[20] = 0x00
 	fixed[18] = 0x30 // stored method
 	b = append(b, fixed...)
 	b = append(b, nameBytes...)
@@ -77,9 +77,9 @@ func TestParseRar3(t *testing.T) {
 	unpSize := uint32(5)
 	fixed[0] = byte(packSize)
 	fixed[4] = byte(unpSize)
-	fixed[15] = byte(nameLen) // name size LE (moved to correct offset)
-	fixed[16] = 0x00
-	fixed[18] = 0x30          // method stored
+	fixed[19] = byte(nameLen) // name size LE at offset 19
+	fixed[20] = 0x00
+	fixed[18] = 0x30 // method stored
 	hb = append(hb, fixed...)
 	hb = append(hb, name...)
 	data := append(append([]byte{}, sig...), hb...)
@@ -497,10 +497,10 @@ func TestRar3FileHeaderAddSize(t *testing.T) {
 	bh := []byte{0x00, 0x00, 0x74, byte(flags), byte(flags >> 8), byte(size & 0xFF), byte(size >> 8)}
 	addSize := []byte{0x04, 0x00, 0x00, 0x00} // 4 bytes of add data
 	fixed := make([]byte, 25)
-	fixed[0] = 1 // packSize
-	fixed[4] = 1 // unpSize
-	fixed[15] = byte(nameLen) // name size LE (at correct offset)
-	fixed[16] = 0x00
+	fixed[0] = 1              // packSize
+	fixed[4] = 1              // unpSize
+	fixed[19] = byte(nameLen) // name size LE at offset 19
+	fixed[20] = 0x00
 	fixed[18] = 0x30
 	buf := bytes.NewBuffer(nil)
 	buf.Write(sig)
@@ -658,8 +658,8 @@ func TestListFiles_Password_RAR3_ReturnsError(t *testing.T) {
 	fixed := make([]byte, 25)
 	fixed[0] = 5
 	fixed[4] = 5
-	fixed[15] = byte(nameLen) // name size LE (at correct offset)
-	fixed[16] = 0x00
+	fixed[19] = byte(nameLen) // name size LE at offset 19
+	fixed[20] = 0x00
 	fixed[18] = 0x30
 	hb = append(hb, fixed...)
 	hb = append(hb, name...)
@@ -797,8 +797,8 @@ func TestLegacyHighSizeUnicode(t *testing.T) {
 	hdr = append(hdr, byte(flags), byte(flags>>8))
 	hdr = append(hdr, byte(size), 0x00)
 	fixed := make([]byte, 25)
-	fixed[15] = byte(nameLen) // name size LE (at correct offset)
-	fixed[16] = 0x00
+	fixed[19] = byte(nameLen) // name size LE at offset 19
+	fixed[20] = 0x00
 	fixed[18] = 0x30
 	// put low sizes
 	fixed[0] = 0x34
@@ -815,5 +815,90 @@ func TestLegacyHighSizeUnicode(t *testing.T) {
 	}
 	if len(idx[0].FileBlocks) != 1 {
 		t.Fatalf("expected 1 file block")
+	}
+}
+
+func TestRar3ExtraBytesBeforeName(t *testing.T) {
+	// Test RAR3 file with extra bytes before the filename (like Clueless file)
+	sig := append([]byte("Rar!\x1A\x07\x00"), 0x00)
+	actualName := "test-file.mkv"
+	// Create name field with 4 extra bytes at the beginning
+	extraBytes := []byte{0x07, 0x00, 0x00, 0x00}
+	nameField := append(extraBytes, []byte(actualName)...)
+	nameLen := len(nameField)
+	headerSize := 7 + 25 + nameLen
+	hb := make([]byte, 0, headerSize)
+	hb = append(hb, 0x00, 0x00)             // CRC
+	hb = append(hb, 0x74)                   // type file
+	hb = append(hb, 0x00, 0x00)             // flags
+	hb = append(hb, byte(headerSize), 0x00) // size
+	fixed := make([]byte, 25)
+	fixed[0] = 10             // packSize
+	fixed[4] = 10             // unpSize
+	fixed[19] = byte(nameLen) // name size includes extra bytes
+	fixed[20] = 0x00
+	fixed[18] = 0x30 // stored method
+	hb = append(hb, fixed...)
+	hb = append(hb, nameField...)
+	data := append(sig, hb...)
+	data = append(data, []byte("some data")...) // Add some dummy data
+
+	p := writeTemp(t, "extra_bytes.rar", data)
+	idx, err := IndexVolumes(defaultFS, []string{p})
+	if err != nil {
+		t.Fatalf("index extra bytes: %v", err)
+	}
+	if len(idx[0].FileBlocks) != 1 {
+		t.Fatalf("expected 1 file block got %d", len(idx[0].FileBlocks))
+	}
+	if idx[0].FileBlocks[0].Name != actualName {
+		t.Fatalf("name mismatch: got %q want %q", idx[0].FileBlocks[0].Name, actualName)
+	}
+}
+
+func TestRar3DataOffsetCalculation(t *testing.T) {
+	// Test that data offset is calculated correctly without the extra 2 bytes
+	sig := append([]byte("Rar!\x1A\x07\x00"), 0x00)
+	name := "offset-test.bin"
+	h := buildRar3FileHeader(name, 5, 5)
+	data := append(sig, h...)
+	// Add some recognizable data
+	testData := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE}
+	data = append(data, testData...)
+
+	p := writeTemp(t, "offset.rar", data)
+	idx, err := IndexVolumes(defaultFS, []string{p})
+	if err != nil {
+		t.Fatalf("index offset: %v", err)
+	}
+	if len(idx[0].FileBlocks) != 1 {
+		t.Fatalf("expected 1 file block")
+	}
+
+	fb := idx[0].FileBlocks[0]
+	// The data should start immediately after the header
+	// sig(8) + header(7 + 25 + len(name))
+	expectedOffset := int64(8 + 7 + 25 + len(name))
+	if fb.DataPos != expectedOffset {
+		t.Fatalf("data offset mismatch: got %d want %d", fb.DataPos, expectedOffset)
+	}
+
+	// Verify we can read the data at the correct offset
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	readData := make([]byte, 5)
+	_, err = f.ReadAt(readData, fb.DataPos)
+	if err != nil {
+		t.Fatalf("read at offset: %v", err)
+	}
+
+	for i, b := range testData {
+		if readData[i] != b {
+			t.Fatalf("data mismatch at byte %d: got 0x%02X want 0x%02X", i, readData[i], b)
+		}
 	}
 }
