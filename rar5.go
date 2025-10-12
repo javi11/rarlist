@@ -193,10 +193,17 @@ func parseRar5(br *bufio.Reader, seeker io.ReadSeeker, vi *VolumeIndex, baseOffs
 				}
 			}
 			fb := FileBlock{HeaderPos: hdrStart, HeaderSize: 4 + headSizeLen + int64(headSize), DataPos: hdrStart + 4 + headSizeLen + int64(headSize), PackedSize: int64(dataSize), VolumeDataSize: int64(dataSize), Name: string(nameBytes), UnpackedSize: int64(unpSizeVal), Stored: stored, Encrypted: encrypted}
+			// VolumeDataSize should represent the full volume file size for reporting purposes
+			// This includes all RAR overhead (signature, headers, end markers) in addition to file data
+			if fileSize > 0 {
+				fb.VolumeDataSize = fileSize - baseOffset
+			}
+
 			vi.FileBlocks = append(vi.FileBlocks, fb)
 			if vi.TotalHeaderBytes == 0 {
 				vi.TotalHeaderBytes = fb.DataPos
 			}
+
 			if debug {
 				logDebug("file name=%s unpacked=%d packed=%d stored=%v enc=%v", fb.Name, unpSizeVal, dataSize, stored, fb.Encrypted)
 			}

@@ -902,3 +902,92 @@ func TestRar3DataOffsetCalculation(t *testing.T) {
 		}
 	}
 }
+
+func TestRar5VolumeDataSize(t *testing.T) {
+	// Test that VolumeDataSize includes full file size (headers + data + end markers)
+	// not just the data portion from the header
+	sig := []byte("Rar!\x1A\x07\x01\x00")
+	name := []byte("volume-test.bin")
+	nameLen := len(name)
+	dataBytes := []byte{1, 2, 3, 4, 5}
+
+	// Build file header
+	blockType := encodeVarint(2)
+	flags := encodeVarint(0x0002) // dataSize present
+	dataSize := encodeVarint(uint64(len(dataBytes)))
+	fileFlags := encodeVarint(0)
+	unp := encodeVarint(uint64(len(dataBytes)))
+	attr := encodeVarint(0)
+	compInfo := encodeVarint(0) // stored
+	hostOS := encodeVarint(0)
+	nameLenVar := encodeVarint(uint64(nameLen))
+
+	fileSpecific := bytes.NewBuffer(nil)
+	fileSpecific.Write(fileFlags)
+	fileSpecific.Write(unp)
+	fileSpecific.Write(attr)
+	fileSpecific.Write(compInfo)
+	fileSpecific.Write(hostOS)
+	fileSpecific.Write(nameLenVar)
+	fileSpecific.Write(name)
+
+	headCore := bytes.NewBuffer(nil)
+	headCore.Write(blockType)
+	headCore.Write(flags)
+	headCore.Write(dataSize)
+	headCore.Write(fileSpecific.Bytes())
+
+	headData := headCore.Bytes()
+	headSizeVar := encodeVarint(uint64(len(headData)))
+
+	buf := bytes.NewBuffer(nil)
+	buf.Write(sig)                     // 8 bytes
+	buf.Write([]byte{0, 0, 0, 0})      // CRC: 4 bytes
+	buf.Write(headSizeVar)             // variable
+	buf.Write(headData)                // variable
+	buf.Write(dataBytes)               // 5 bytes
+
+	// Add end of archive marker
+	endCore := bytes.NewBuffer(nil)
+	endCore.Write(encodeVarint(5)) // blockType 5
+	endCore.Write(encodeVarint(0)) // flags 0
+	endHeadData := endCore.Bytes()
+	endHeadSizeVar := encodeVarint(uint64(len(endHeadData)))
+	buf.Write([]byte{0, 0, 0, 0}) // crc
+	buf.Write(endHeadSizeVar)
+	buf.Write(endHeadData)
+
+	fullFileData := buf.Bytes()
+	p := writeTemp(t, "rar5_volume_size.rar", fullFileData)
+
+	idx, err := IndexVolumes(defaultFS, []string{p})
+	if err != nil {
+		t.Fatalf("index rar5 volume size: %v", err)
+	}
+	if len(idx) != 1 || len(idx[0].FileBlocks) != 1 {
+		t.Fatalf("expected 1 volume with 1 file block")
+	}
+
+	fb := idx[0].FileBlocks[0]
+
+	// VolumeDataSize should equal the full file size, not just the data portion
+	expectedVolumeSize := int64(len(fullFileData))
+	if fb.VolumeDataSize != expectedVolumeSize {
+		t.Fatalf("VolumeDataSize mismatch: got %d want %d (file size)", fb.VolumeDataSize, expectedVolumeSize)
+	}
+
+	// PackedSize should still be just the data portion for extraction
+	expectedPackedSize := int64(len(dataBytes))
+	if fb.PackedSize != expectedPackedSize {
+		t.Fatalf("PackedSize mismatch: got %d want %d (data only)", fb.PackedSize, expectedPackedSize)
+	}
+
+	// Verify aggregation uses VolumeDataSize for reporting
+	agg := AggregateFiles(idx)
+	if len(agg) != 1 {
+		t.Fatalf("expected 1 aggregated file")
+	}
+	if agg[0].Parts[0].PackedSize != expectedVolumeSize {
+		t.Fatalf("aggregated PackedSize should use VolumeDataSize: got %d want %d", agg[0].Parts[0].PackedSize, expectedVolumeSize)
+	}
+}
